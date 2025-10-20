@@ -33,6 +33,23 @@ def get_db_connection():
         print(f"Database connection error: {err}")
         return None
 
+def check_if_admin(user_id):
+    """Check if user is admin by querying database"""
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM admin_users WHERE admin_id = %s", (user_id,))
+            is_admin = cursor.fetchone()[0] > 0
+            cursor.close()
+            return is_admin
+        except mysql.connector.Error as err:
+            print(f"Database error checking admin: {err}")
+            return False
+        finally:
+            conn.close()
+    return False
+
 def cleanup_inactive_users():
     """Remove users inactive for more than 5 minutes"""
     with users_lock:
@@ -45,6 +62,14 @@ def cleanup_inactive_users():
         
         for user_id in inactive_users:
             del active_users[user_id]
+        
+        # If users were removed, broadcast update
+        if len(inactive_users) > 0:
+            non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
+            socketio.emit('active_users_update', {
+                'count': non_admin_count,
+                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+            })
         
         return len(inactive_users) > 0
 
@@ -78,18 +103,25 @@ def handle_user_login(data):
     user_info = data.get('user_info', {})
     
     if user_id:
+        # Check if user is admin (exclude from active count)
+        is_admin = check_if_admin(user_id)
+        
         with users_lock:
             active_users[user_id] = {
                 'socket_id': request.sid,
                 'last_seen': datetime.now(),
                 'user_info': user_info,
-                'user_id': user_id
+                'user_id': user_id,
+                'is_admin': is_admin
             }
         
-        # Broadcast updated user count
+        # Count only non-admin users
+        non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
+        
+        # Broadcast updated user count (excluding admins)
         emit('active_users_update', {
-            'count': len(active_users),
-            'users': list(active_users.values())
+            'count': non_admin_count,
+            'users': [user for user in active_users.values() if not user.get('is_admin', False)]
         }, broadcast=True)
 
 @socketio.on('user_activity')
@@ -104,11 +136,12 @@ def handle_user_activity(data):
 # API Routes
 @app.route('/api/active-users', methods=['GET'])
 def get_active_users():
-    """Get current active users"""
+    """Get current active users (excluding admins)"""
     with users_lock:
+        non_admin_users = [user for user in active_users.values() if not user.get('is_admin', False)]
         return jsonify({
-            'count': len(active_users),
-            'users': list(active_users.values())
+            'count': len(non_admin_users),
+            'users': non_admin_users
         })
 
 @app.route('/api/user-presence', methods=['POST'])
@@ -153,6 +186,7 @@ def update_user_presence():
         
         # Update active users
         with users_lock:
+            is_admin = check_if_admin(user_id)
             if user_id in active_users:
                 active_users[user_id]['last_seen'] = datetime.now()
             else:
@@ -160,7 +194,8 @@ def update_user_presence():
                     'socket_id': None,  # No socket connection from API
                     'last_seen': datetime.now(),
                     'user_info': user_info,
-                    'user_id': user_id
+                    'user_id': user_id,
+                    'is_admin': is_admin
                 }
         
         return jsonify({'success': True, 'user_id': user_id})
@@ -171,8 +206,11 @@ def update_user_presence():
 def get_stats():
     """Get server statistics"""
     conn = get_db_connection()
+    # Count only non-admin users
+    non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
+    
     stats = {
-        'active_users': len(active_users),
+        'active_users': non_admin_count,
         'server_time': datetime.now().isoformat(),
         'uptime': 'N/A'
     }
