@@ -91,9 +91,11 @@ def handle_disconnect():
         
         if user_to_remove:
             del active_users[user_to_remove]
+            # Count only non-admin users
+            non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
             emit('active_users_update', {
-                'count': len(active_users),
-                'users': list(active_users.values())
+                'count': non_admin_count,
+                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
             }, broadcast=True)
 
 @socketio.on('user_login')
@@ -242,11 +244,25 @@ def get_stats():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
+    non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'active_users': len(active_users)
+        'active_users': non_admin_count
     })
+
+@app.route('/debug', methods=['GET'])
+def debug_info():
+    """Debug endpoint to see all active users"""
+    with users_lock:
+        all_users = list(active_users.values())
+        non_admin_users = [user for user in active_users.values() if not user.get('is_admin', False)]
+        return jsonify({
+            'total_users': len(all_users),
+            'non_admin_users': len(non_admin_users),
+            'all_users': all_users,
+            'non_admin_users': non_admin_users
+        })
 
 @app.route('/', methods=['GET'])
 def home():
@@ -258,7 +274,8 @@ def home():
             'health': '/health',
             'active_users': '/api/active-users',
             'user_presence': '/api/user-presence',
-            'stats': '/api/stats'
+            'stats': '/api/stats',
+            'debug': '/debug'
         }
     })
 
@@ -270,9 +287,11 @@ if __name__ == '__main__':
             import time
             time.sleep(120)  # 2 minutes
             if cleanup_inactive_users():
+                # Count only non-admin users
+                non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
                 socketio.emit('active_users_update', {
-                    'count': len(active_users),
-                    'users': list(active_users.values())
+                    'count': non_admin_count,
+                    'users': [user for user in active_users.values() if not user.get('is_admin', False)]
                 })
     
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
