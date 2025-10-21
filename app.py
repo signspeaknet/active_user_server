@@ -303,6 +303,33 @@ if __name__ == '__main__':
                 'count': non_admin_count,
                 'users': [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
             })
+
+            # Every full minute, persist the non-admin active user count and roll up >7d
+            try:
+                if datetime.now().second < 3:  # near minute boundary
+                    conn = get_db_connection()
+                    if conn:
+                        try:
+                            cursor = conn.cursor()
+                            # Upsert minute bucket count
+                            cursor.execute(
+                                """
+                                INSERT INTO active_users_minutely (bucket_minute, user_count)
+                                VALUES (%s, %s)
+                                ON DUPLICATE KEY UPDATE user_count = VALUES(user_count)
+                                """,
+                                (datetime.now().replace(second=0, microsecond=0), non_admin_count)
+                            )
+                            # Rollup older than 7 days
+                            cursor.execute("CALL RollupActiveUsers()")
+                            conn.commit()
+                        except mysql.connector.Error as err:
+                            print(f"DB error writing minute agg: {err}")
+                        finally:
+                            cursor.close()
+                            conn.close()
+            except Exception as e:
+                print(f"Aggregation error: {e}")
     
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
     cleanup_thread.start()
