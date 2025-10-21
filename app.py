@@ -57,7 +57,7 @@ def cleanup_inactive_users():
         inactive_users = []
         
         for user_id, user_data in active_users.items():
-            if current_time - user_data['last_seen'] > timedelta(minutes=5):
+            if current_time - user_data['last_seen'] > timedelta(seconds=10):
                 inactive_users.append(user_id)
         
         for user_id in inactive_users:
@@ -285,14 +285,14 @@ if __name__ == '__main__':
     def cleanup_loop():
         while True:
             import time
-            time.sleep(120)  # 2 minutes
-            if cleanup_inactive_users():
-                # Count only non-admin users
-                non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
-                socketio.emit('active_users_update', {
-                    'count': non_admin_count,
-                    'users': [user for user in active_users.values() if not user.get('is_admin', False)]
-                })
+            time.sleep(3)
+            cleanup_inactive_users()
+            # Count only non-admin users
+            non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
+            socketio.emit('active_users_update', {
+                'count': non_admin_count,
+                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+            })
     
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
     cleanup_thread.start()
