@@ -50,6 +50,16 @@ def check_if_admin(user_id):
             conn.close()
     return False
 
+def serialize_user(user_data):
+    """Convert user record to JSON-serializable dict"""
+    return {
+        'socket_id': user_data.get('socket_id'),
+        'last_seen': user_data.get('last_seen').isoformat() if isinstance(user_data.get('last_seen'), datetime) else user_data.get('last_seen'),
+        'user_info': user_data.get('user_info', {}),
+        'user_id': user_data.get('user_id'),
+        'is_admin': user_data.get('is_admin', False)
+    }
+
 def cleanup_inactive_users():
     """Remove users inactive for more than 5 minutes"""
     with users_lock:
@@ -68,7 +78,7 @@ def cleanup_inactive_users():
             non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
             socketio.emit('active_users_update', {
                 'count': non_admin_count,
-                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+                'users': [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
             })
         
         return len(inactive_users) > 0
@@ -94,8 +104,8 @@ def handle_disconnect():
             # Count only non-admin users
             non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
             emit('active_users_update', {
-                'count': non_admin_count,
-                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+            'count': non_admin_count,
+            'users': [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
             }, broadcast=True)
 
 @socketio.on('user_login')
@@ -123,7 +133,7 @@ def handle_user_login(data):
         # Broadcast updated user count (excluding admins)
         emit('active_users_update', {
             'count': non_admin_count,
-            'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+            'users': [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
         }, broadcast=True)
 
 @socketio.on('user_activity')
@@ -143,7 +153,7 @@ def get_active_users():
         non_admin_users = [user for user in active_users.values() if not user.get('is_admin', False)]
         return jsonify({
             'count': len(non_admin_users),
-            'users': non_admin_users
+            'users': [serialize_user(user) for user in non_admin_users]
         })
 
 @app.route('/api/user-presence', methods=['POST'])
@@ -255,13 +265,13 @@ def health_check():
 def debug_info():
     """Debug endpoint to see all active users"""
     with users_lock:
-        all_users = list(active_users.values())
-        non_admin_users = [user for user in active_users.values() if not user.get('is_admin', False)]
+        all_users = [serialize_user(user) for user in active_users.values()]
+        non_admin_users = [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
         return jsonify({
             'total_users': len(all_users),
             'non_admin_users': len(non_admin_users),
             'all_users': all_users,
-            'non_admin_users': non_admin_users
+            'non_admin_users_list': non_admin_users
         })
 
 @app.route('/', methods=['GET'])
@@ -291,7 +301,7 @@ if __name__ == '__main__':
             non_admin_count = sum(1 for user in active_users.values() if not user.get('is_admin', False))
             socketio.emit('active_users_update', {
                 'count': non_admin_count,
-                'users': [user for user in active_users.values() if not user.get('is_admin', False)]
+                'users': [serialize_user(user) for user in active_users.values() if not user.get('is_admin', False)]
             })
     
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
