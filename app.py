@@ -320,6 +320,19 @@ if __name__ == '__main__':
                                 """,
                                 (datetime.now().replace(second=0, microsecond=0), non_admin_count)
                             )
+                            # Insert per-user snapshot for this minute into per_minute_active_users
+                            bucket = datetime.now().replace(second=0, microsecond=0)
+                            with users_lock:
+                                snapshot_user_ids = [u['user_id'] for u in active_users.values() if not u.get('is_admin', False)]
+                            if len(snapshot_user_ids) > 0:
+                                values = [(bucket, uid) for uid in snapshot_user_ids]
+                                cursor.executemany(
+                                    """
+                                    INSERT IGNORE INTO per_minute_active_users (bucket_minute, user_id)
+                                    VALUES (%s, %s)
+                                    """,
+                                    values
+                                )
                             # Rollup older than 7 days
                             cursor.execute("CALL RollupActiveUsers()")
                             conn.commit()
