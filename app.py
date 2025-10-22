@@ -5,6 +5,7 @@ import mysql.connector
 from datetime import datetime, timedelta
 import json
 import os
+import time
 from threading import Lock
 
 app = Flask(__name__)
@@ -20,6 +21,11 @@ db_config = {
     'database': os.environ.get('DB_NAME'),
     'port': int(os.environ.get('DB_PORT', 3306))
 }
+
+# Presence configuration
+PRESENCE_INACTIVE_SECONDS = int(os.environ.get('PRESENCE_INACTIVE_SECONDS', 300))  # 5 minutes
+PRESENCE_ROLLUP_SECONDS = int(os.environ.get('PRESENCE_ROLLUP_SECONDS', 60))       # 1 minute
+PRESENCE_RETENTION_DAYS = int(os.environ.get('PRESENCE_RETENTION_DAYS', 90))       # retain 90 days of minute data
 
 # Thread-safe storage for active users
 active_users = {}
@@ -67,7 +73,7 @@ def cleanup_inactive_users():
         inactive_users = []
         
         for user_id, user_data in active_users.items():
-            if current_time - user_data['last_seen'] > timedelta(seconds=10):
+            if current_time - user_data['last_seen'] > timedelta(seconds=PRESENCE_INACTIVE_SECONDS):
                 inactive_users.append(user_id)
         
         for user_id in inactive_users:
@@ -82,6 +88,99 @@ def cleanup_inactive_users():
             })
         
         return len(inactive_users) > 0
+
+def record_minute_presence():
+    """Record the set of currently active users into user_presence_minutely for the current minute bucket."""
+    bucket_minute = datetime.now().replace(second=0, microsecond=0)
+    # Snapshot active user ids that are still within the inactive threshold
+    with users_lock:
+        now = datetime.now()
+        active_user_ids = [
+            user_id for user_id, user_data in active_users.items()
+            if (now - user_data['last_seen']) <= timedelta(seconds=PRESENCE_INACTIVE_SECONDS)
+        ]
+
+    if not active_user_ids:
+        return 0
+
+    conn = get_db_connection()
+    if not conn:
+        return 0
+
+    inserted = 0
+    try:
+        cursor = conn.cursor()
+        for user_id in active_user_ids:
+            # Use INSERT IGNORE to avoid duplicate key errors for (bucket_minute, user_id)
+            cursor.execute(
+                """
+                INSERT IGNORE INTO user_presence_minutely (bucket_minute, user_id)
+                VALUES (%s, %s)
+                """,
+                (bucket_minute, user_id)
+            )
+            inserted += cursor.rowcount if cursor.rowcount is not None else 0
+        conn.commit()
+        cursor.close()
+    except mysql.connector.Error as err:
+        print(f"Database error in record_minute_presence: {err}")
+    finally:
+        conn.close()
+
+    return inserted
+
+def presence_rollup_loop():
+    """Background loop that records presence once per minute (or per configured cadence)."""
+    while True:
+        if PRESENCE_ROLLUP_SECONDS == 60:
+            now = datetime.now()
+            next_minute = (now.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            sleep_seconds = max(0.0, (next_minute - now).total_seconds())
+            time.sleep(sleep_seconds)
+        else:
+            time.sleep(max(1, PRESENCE_ROLLUP_SECONDS))
+
+        try:
+            record_minute_presence()
+        except Exception as e:
+            # Guard the loop against any unexpected exception
+            print(f"Error in presence_rollup_loop: {e}")
+
+def cleanup_old_presence_data():
+    """Delete old rows from user_presence_minutely beyond retention window."""
+    if PRESENCE_RETENTION_DAYS <= 0:
+        return 0
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    deleted = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM user_presence_minutely
+            WHERE bucket_minute < (NOW() - INTERVAL %s DAY)
+            """,
+            (PRESENCE_RETENTION_DAYS,)
+        )
+        deleted = cursor.rowcount if cursor.rowcount is not None else 0
+        conn.commit()
+        cursor.close()
+    except mysql.connector.Error as err:
+        print(f"Database error in cleanup_old_presence_data: {err}")
+    finally:
+        conn.close()
+    return deleted
+
+def presence_retention_loop():
+    """Background loop to periodically prune old presence rows (hourly)."""
+    while True:
+        try:
+            cleanup_old_presence_data()
+        except Exception as e:
+            print(f"Error in presence_retention_loop: {e}")
+        # Run hourly
+        time.sleep(3600)
 
 @socketio.on('connect')
 def handle_connect():
@@ -294,7 +393,6 @@ if __name__ == '__main__':
     import threading
     def cleanup_loop():
         while True:
-            import time
             time.sleep(3)
             cleanup_inactive_users()
             # Count only non-admin users
@@ -306,6 +404,14 @@ if __name__ == '__main__':
     
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
     cleanup_thread.start()
+    
+    # Start presence minute-rollup thread
+    presence_thread = threading.Thread(target=presence_rollup_loop, daemon=True)
+    presence_thread.start()
+
+    # Start presence retention cleanup thread
+    retention_thread = threading.Thread(target=presence_retention_loop, daemon=True)
+    retention_thread.start()
     
     # Run the app with production settings
     port = int(os.environ.get('PORT', 5000))
