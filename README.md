@@ -10,6 +10,7 @@ A Python Flask server with Socket.IO for real-time user presence tracking in the
 - Automatic cleanup of inactive users
 - CORS support for cross-origin requests
 - Health check endpoint for monitoring
+- **Privacy-friendly**: No IP addresses or user agents collected
 
 ## API Endpoints
 

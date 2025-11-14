@@ -276,16 +276,17 @@ def update_user_presence():
                     'timestamp': datetime.now().isoformat()
                 })
                 
+                # Privacy-friendly: Only store user_id, timestamp, and minimal session data
+                # No IP address or user agent collected
                 query = """
-                INSERT INTO user_sessions (user_id, last_activity, session_data, ip_address, user_agent) 
-                VALUES (%s, NOW(), %s, %s, %s) 
+                INSERT INTO user_sessions (user_id, last_activity, session_data) 
+                VALUES (%s, NOW(), %s) 
                 ON DUPLICATE KEY UPDATE 
-                last_activity = NOW(), session_data = %s, ip_address = %s, user_agent = %s
+                last_activity = NOW(), session_data = %s
                 """
                 
                 cursor.execute(query, (
-                    user_id, session_data, request.remote_addr, request.headers.get('User-Agent'),
-                    session_data, request.remote_addr, request.headers.get('User-Agent')
+                    user_id, session_data, session_data
                 ))
                 conn.commit()
                 cursor.close()
